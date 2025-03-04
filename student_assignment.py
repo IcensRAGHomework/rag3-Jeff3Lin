@@ -57,7 +57,55 @@ def generate_hw01():
     return collection
     
 def generate_hw02(question, city, store_type, start_date, end_date):
-    pass
+    chroma_client = chromadb.PersistentClient(path=dbpath)
+    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+        api_key=gpt_emb_config['api_key'],
+        api_base=gpt_emb_config['api_base'],
+        api_type=gpt_emb_config['openai_type'],
+        api_version=gpt_emb_config['api_version'],
+        deployment_id=gpt_emb_config['deployment_name']
+    )
+    collection = chroma_client.get_or_create_collection(
+        name="TRAVEL",
+        metadata={"hnsw:space": "cosine"},
+        embedding_function=openai_ef
+    )
+
+    where_conditions = []
+    if city:
+        where_conditions.append({"city": {"$in": city}})
+    if store_type:
+        where_conditions.append({"type": {"$in": store_type}})
+    if start_date and end_date:
+        start_timestamp = int(start_date.timestamp())
+        end_timestamp = int(end_date.timestamp())
+        where_conditions.append({"date": {"$gte": start_timestamp}})
+        where_conditions.append({"date": {"$lte": end_timestamp}})
+
+    where_filter = {"$and": where_conditions} if where_conditions else None
+
+    results = collection.query(
+        query_texts=[question],
+        n_results=10,
+        where=where_filter,
+        include=["metadatas", "distances"]
+    )
+
+    filtered_results = []
+    for i, distance in enumerate(results["distances"][0]):
+        similarity = 1 - distance
+        if similarity >= 0.80:
+            filtered_results.append((results["metadatas"][0][i]["name"], similarity))
+    
+    filtered_results.sort(key=lambda x: x[1], reverse=True)
+    filtered_names = [name for name, _ in filtered_results]
+
+    # 調試用：顯示相似度（不影響最終輸出格式）
+    print(f"調試資訊：找到 {len(filtered_results)} 個符合條件的店家")
+    for name, similarity in filtered_results:
+        print(f"- {name}: 相似度 {similarity:.3f}")
+    
+    return filtered_names
     
 def generate_hw03(question, store_name, new_store_name, city, store_type):
     pass
@@ -79,9 +127,8 @@ def demo(question):
     
     return collection
 
-# 主程式邏輯：檢查 chroma.sqlite3 是否存在
 if __name__ == "__main__":
-    sqlite_path = os.path.join(dbpath, "chroma.sqlite3")  # 構建 chroma.sqlite3 的完整路徑
+    sqlite_path = os.path.join(dbpath, "chroma.sqlite3")
     if os.path.exists(sqlite_path):
         print(f"'{sqlite_path}' 已存在，跳過 generate_hw01() 的執行。")
     else:
@@ -92,3 +139,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"執行 generate_hw01() 時發生錯誤：{e}")
             traceback.print_exc()
+
+    question = "我想要找有關茶餐點的店家"
+    city = ["宜蘭縣", "新北市"]
+    store_type = ["美食"]
+    start_date = datetime.datetime(2024, 4, 1)
+    end_date = datetime.datetime(2024, 5, 1)
+
+    result = generate_hw02(question, city, store_type, start_date, end_date)
+    print(result)  # 符合題目要求的格式
