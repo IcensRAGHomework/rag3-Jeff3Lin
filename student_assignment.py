@@ -108,7 +108,74 @@ def generate_hw02(question, city, store_type, start_date, end_date):
     return filtered_names
     
 def generate_hw03(question, store_name, new_store_name, city, store_type):
-    pass
+    chroma_client = chromadb.PersistentClient(path=dbpath)
+    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+        api_key=gpt_emb_config['api_key'],
+        api_base=gpt_emb_config['api_base'],
+        api_type=gpt_emb_config['openai_type'],
+        api_version=gpt_emb_config['api_version'],
+        deployment_id=gpt_emb_config['deployment_name']
+    )
+    collection = chroma_client.get_or_create_collection(
+        name="TRAVEL",
+        metadata={"hnsw:space": "cosine"},
+        embedding_function=openai_ef
+    )
+
+    # 1. 更新店家資訊
+    results = collection.get(
+        where={"name": store_name},
+        include=["metadatas"]  # 修正：移除 "ids"，僅保留 "metadatas"
+    )
+
+    if results["ids"]:
+        store_id = results["ids"][0]
+        metadata = results["metadatas"][0]
+        metadata["new_store_name"] = new_store_name
+        collection.update(
+            ids=[store_id],
+            metadatas=[metadata]
+        )
+        print(f"Successfully updated store {store_name} with new_store_name: {new_store_name}")
+    else:
+        print(f"Store {store_name} not found.")
+        return []
+
+    # 2. 查詢店家
+    where_conditions = []
+    if city:
+        where_conditions.append({"city": {"$in": city}})
+    if store_type:
+        where_conditions.append({"type": {"$in": store_type}})
+
+    where_filter = {"$and": where_conditions} if where_conditions else None
+
+    results = collection.query(
+        query_texts=[question],
+        n_results=10,
+        where=where_filter,
+        include=["metadatas", "distances"]
+    )
+
+    # 3. 替換顯示名稱並過濾相似度
+    filtered_stores = []
+    for i, distance in enumerate(results["distances"][0]):
+        similarity = 1 - distance
+        if similarity >= 0.80:
+            metadata = results["metadatas"][0][i]
+            display_name = metadata.get("new_store_name", metadata["name"])
+            filtered_stores.append({"name": display_name, "similarity": similarity})
+
+    # 4. 排序並提取名稱
+    filtered_stores = sorted(filtered_stores, key=lambda x: x["similarity"], reverse=True)
+    filtered_names = [store["name"] for store in filtered_stores]
+
+    # 調試資訊
+    print(f"調試資訊：找到 {len(filtered_names)} 個符合條件的店家")
+    for store in filtered_stores:
+        print(f"- {store['name']}: 相似度 {store['similarity']:.3f}")
+
+    return filtered_names
     
 def demo(question):
     chroma_client = chromadb.PersistentClient(path=dbpath)
@@ -148,3 +215,13 @@ if __name__ == "__main__":
 
     result = generate_hw02(question, city, store_type, start_date, end_date)
     print(result)  # 符合題目要求的格式
+    
+    # 測試 hw03
+    question = "我想要找南投縣的田媽媽餐廳，招牌是蕎麥麵"
+    store_name = "耄饕客棧"
+    new_store_name = "田媽媽（耄饕客棧）"
+    city = ["南投縣"]
+    store_type = ["美食"]
+
+    result = generate_hw03(question, store_name, new_store_name, city, store_type)
+    print(result)  # 期望輸出：['田媽媽社區餐廳', '圓夢工坊', ...]
